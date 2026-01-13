@@ -1,11 +1,12 @@
 import { useEffect, useState, useRef } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
-import { Send, MoreVertical, User, Info, UserCheck, Eye } from 'lucide-react';
+import { Send, MoreVertical, User, Info, UserCheck, Eye, LogOut, UserPlus, Shield } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { toast } from '@/hooks/use-toast';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -54,19 +55,23 @@ interface ChatWindowProps {
 }
 
 export function ChatWindow({ chatId, onToggleDetails, showDetails }: ChatWindowProps) {
-  const { user } = useAuth();
+  const { user, role, profile } = useAuth();
   const [chat, setChat] = useState<Chat | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [tags, setTags] = useState<Tag[]>([]);
   const [sending, setSending] = useState(false);
   const [assumingChat, setAssumingChat] = useState(false);
+  const [releasingChat, setReleasingChat] = useState(false);
+  const [requestingAccess, setRequestingAccess] = useState(false);
   const [attendantProfile, setAttendantProfile] = useState<Profile | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  const isCurrentAttendant = chat?.atendente_atual_id === user?.id;
   const isObserverMode = chat?.atendente_atual_id && chat.atendente_atual_id !== user?.id;
   const canAssumeChat = !chat?.atendente_atual_id;
+  const isAdmin = role === 'admin';
 
   useEffect(() => {
     fetchChat();
@@ -80,7 +85,17 @@ export function ChatWindow({ chatId, onToggleDetails, showDetails }: ChatWindowP
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages', filter: `chat_id=eq.${chatId}` },
         (payload) => {
-          setMessages((prev) => [...prev, payload.new as Message]);
+          const newMsg = payload.new as Message;
+          setMessages((prev) => [...prev, newMsg]);
+          
+          // Notify current attendant about access requests
+          if (newMsg.tipo === 'sistema' && newMsg.texto.includes('solicitou o acesso') && isCurrentAttendant) {
+            toast({
+              title: 'Solicitação de Acesso',
+              description: newMsg.texto,
+              variant: 'default',
+            });
+          }
         }
       )
       .subscribe();
@@ -109,7 +124,7 @@ export function ChatWindow({ chatId, onToggleDetails, showDetails }: ChatWindowP
       supabase.removeChannel(messagesChannel);
       supabase.removeChannel(chatChannel);
     };
-  }, [chatId, user?.id]);
+  }, [chatId, user?.id, isCurrentAttendant]);
 
   useEffect(() => {
     scrollToBottom();
@@ -182,6 +197,85 @@ export function ChatWindow({ chatId, onToggleDetails, showDetails }: ChatWindowP
         .eq('id', chatId);
       
       await fetchChat();
+      toast({
+        title: 'Atendimento assumido',
+        description: 'Você agora é o responsável por este chat.',
+      });
+    } finally {
+      setAssumingChat(false);
+    }
+  };
+
+  const handleReleaseChat = async () => {
+    if (!user?.id || releasingChat) return;
+    
+    setReleasingChat(true);
+    try {
+      await supabase
+        .from('chats')
+        .update({ 
+          atendente_atual_id: null,
+          status: 'aberto'
+        })
+        .eq('id', chatId);
+      
+      await fetchChat();
+      toast({
+        title: 'Chat liberado',
+        description: 'Você liberou a conversa para outros atendentes.',
+      });
+    } finally {
+      setReleasingChat(false);
+    }
+  };
+
+  const handleRequestAccess = async () => {
+    if (!user?.id || !profile?.nome || requestingAccess) return;
+    
+    setRequestingAccess(true);
+    try {
+      await supabase.from('messages').insert({
+        chat_id: chatId,
+        texto: `${profile.nome} solicitou o acesso a esta conversa.`,
+        tipo: 'sistema',
+        enviado_por_id: user.id,
+      });
+      
+      toast({
+        title: 'Solicitação enviada',
+        description: 'O atendente atual foi notificado sobre sua solicitação.',
+      });
+    } finally {
+      setRequestingAccess(false);
+    }
+  };
+
+  const handleForceAssume = async () => {
+    if (!user?.id || !isAdmin || assumingChat) return;
+    
+    setAssumingChat(true);
+    try {
+      // Send system message about the takeover
+      await supabase.from('messages').insert({
+        chat_id: chatId,
+        texto: `${profile?.nome || 'Admin'} (Admin) assumiu forçadamente esta conversa.`,
+        tipo: 'sistema',
+        enviado_por_id: user.id,
+      });
+
+      await supabase
+        .from('chats')
+        .update({ 
+          atendente_atual_id: user.id,
+          status: 'em_atendimento'
+        })
+        .eq('id', chatId);
+      
+      await fetchChat();
+      toast({
+        title: 'Controle assumido',
+        description: 'Você assumiu o controle deste chat como administrador.',
+      });
     } finally {
       setAssumingChat(false);
     }
@@ -247,18 +341,34 @@ export function ChatWindow({ chatId, onToggleDetails, showDetails }: ChatWindowP
           </div>
         </div>
         <div className="flex items-center gap-1">
+          {/* Assume Chat Button - visible when no attendant */}
           {canAssumeChat && (
             <Button
               variant="default"
               size="sm"
               onClick={handleAssumeChat}
               disabled={assumingChat}
-              className="mr-2"
+              className="mr-2 bg-emerald-600 hover:bg-emerald-700"
             >
               <UserCheck className="w-4 h-4 mr-1" />
               {assumingChat ? 'Assumindo...' : 'Assumir Atendimento'}
             </Button>
           )}
+
+          {/* Release Chat Button - visible when current user is attendant */}
+          {isCurrentAttendant && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleReleaseChat}
+              disabled={releasingChat}
+              className="mr-2"
+            >
+              <LogOut className="w-4 h-4 mr-1" />
+              {releasingChat ? 'Liberando...' : 'Liberar Chat'}
+            </Button>
+          )}
+
           {chat.tags && (
             <Badge
               variant="outline"
@@ -338,20 +448,32 @@ export function ChatWindow({ chatId, onToggleDetails, showDetails }: ChatWindowP
           messages.map((message) => (
             <div
               key={message.id}
-              className={`flex ${message.tipo === 'saida' ? 'justify-end' : 'justify-start'}`}
+              className={`flex ${
+                message.tipo === 'sistema' 
+                  ? 'justify-center' 
+                  : message.tipo === 'saida' 
+                    ? 'justify-end' 
+                    : 'justify-start'
+              }`}
             >
-              <div
-                className={`max-w-[65%] px-3 py-2 rounded-lg shadow-sm ${
-                  message.tipo === 'saida'
-                    ? 'bg-[#dcf8c6] text-foreground rounded-tr-none'
-                    : 'bg-card text-foreground rounded-tl-none'
-                }`}
-              >
-                <p className="text-sm whitespace-pre-wrap break-words">{message.texto}</p>
-                <p className="text-[10px] text-muted-foreground mt-1 text-right">
-                  {format(new Date(message.created_at), 'HH:mm')}
-                </p>
-              </div>
+              {message.tipo === 'sistema' ? (
+                <div className="bg-amber-100 text-amber-800 text-xs px-3 py-1.5 rounded-lg max-w-[80%]">
+                  {message.texto}
+                </div>
+              ) : (
+                <div
+                  className={`max-w-[65%] px-3 py-2 rounded-lg shadow-sm ${
+                    message.tipo === 'saida'
+                      ? 'bg-[#dcf8c6] text-foreground rounded-tr-none'
+                      : 'bg-card text-foreground rounded-tl-none'
+                  }`}
+                >
+                  <p className="text-sm whitespace-pre-wrap break-words">{message.texto}</p>
+                  <p className="text-[10px] text-muted-foreground mt-1 text-right">
+                    {format(new Date(message.created_at), 'HH:mm')}
+                  </p>
+                </div>
+              )}
             </div>
           ))
         )}
@@ -361,10 +483,37 @@ export function ChatWindow({ chatId, onToggleDetails, showDetails }: ChatWindowP
       {isObserverMode && (
         <Alert className="mx-3 mb-2 border-amber-500 bg-amber-50">
           <Eye className="h-4 w-4 text-amber-600" />
-          <AlertDescription className="text-amber-800">
-            <strong>Modo Observador:</strong> O atendente{' '}
-            <span className="font-semibold">{attendantProfile?.nome || 'Carregando...'}</span> está
-            cuidando desta conversa.
+          <AlertDescription className="text-amber-800 flex items-center justify-between">
+            <span>
+              <strong>Modo Observador:</strong> O atendente{' '}
+              <span className="font-semibold">{attendantProfile?.nome || 'Carregando...'}</span> está
+              cuidando desta conversa.
+            </span>
+            <div className="flex gap-2 ml-4">
+              {isAdmin ? (
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  onClick={handleForceAssume}
+                  disabled={assumingChat}
+                  className="shrink-0"
+                >
+                  <Shield className="w-3 h-3 mr-1" />
+                  {assumingChat ? 'Assumindo...' : 'Assumir Forçadamente'}
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleRequestAccess}
+                  disabled={requestingAccess}
+                  className="shrink-0 border-amber-500 text-amber-700 hover:bg-amber-100"
+                >
+                  <UserPlus className="w-3 h-3 mr-1" />
+                  {requestingAccess ? 'Enviando...' : 'Solicitar Acesso'}
+                </Button>
+              )}
+            </div>
           </AlertDescription>
         </Alert>
       )}

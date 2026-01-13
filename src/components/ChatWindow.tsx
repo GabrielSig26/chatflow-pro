@@ -130,7 +130,7 @@ export function ChatWindow({ chatId }: ChatWindowProps) {
     fetchChat();
   };
 
-  const handleUpdateStatus = async (status: string) => {
+  const handleUpdateStatus = async (status: 'aberto' | 'em_atendimento' | 'aguardando' | 'finalizado') => {
     await supabase.from('chats').update({ status }).eq('id', chatId);
     fetchChat();
   };

@@ -192,7 +192,7 @@ export default function Admin() {
                   </Badge>
                   <Select
                     value={getUserRole(profile.user_id)}
-                    onValueChange={(value) => handleRoleChange(profile.user_id, value)}
+                    onValueChange={(value: string) => handleRoleChange(profile.user_id, value as 'admin' | 'marketing' | 'comercial' | 'suporte')}
                   >
                     <SelectTrigger className="w-36">
                       <SelectValue />

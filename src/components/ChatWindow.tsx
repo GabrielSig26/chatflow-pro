@@ -1,11 +1,11 @@
 import { useEffect, useState, useRef } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
-import { Send, MoreVertical, User, Info } from 'lucide-react';
+import { Send, MoreVertical, User, Info, UserCheck, Eye } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { ScrollArea } from '@/components/ui/scroll-area';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -14,7 +14,6 @@ import {
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
 import { format } from 'date-fns';
-import { ptBR } from 'date-fns/locale';
 
 interface Tag {
   id: string;
@@ -28,6 +27,7 @@ interface Chat {
   cliente_numero: string;
   status: string;
   tag_id: string | null;
+  atendente_atual_id: string | null;
   tags?: Tag | null;
 }
 
@@ -38,6 +38,13 @@ interface Message {
   tipo: string;
   enviado_por_id: string | null;
   created_at: string;
+}
+
+interface Profile {
+  id: string;
+  user_id: string;
+  nome: string;
+  email: string;
 }
 
 interface ChatWindowProps {
@@ -53,15 +60,21 @@ export function ChatWindow({ chatId, onToggleDetails, showDetails }: ChatWindowP
   const [newMessage, setNewMessage] = useState('');
   const [tags, setTags] = useState<Tag[]>([]);
   const [sending, setSending] = useState(false);
+  const [assumingChat, setAssumingChat] = useState(false);
+  const [attendantProfile, setAttendantProfile] = useState<Profile | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const isObserverMode = chat?.atendente_atual_id && chat.atendente_atual_id !== user?.id;
+  const canAssumeChat = !chat?.atendente_atual_id;
 
   useEffect(() => {
     fetchChat();
     fetchMessages();
     fetchTags();
 
-    const channel = supabase
+    // Channel for messages realtime
+    const messagesChannel = supabase
       .channel(`messages-${chatId}`)
       .on(
         'postgres_changes',
@@ -72,18 +85,50 @@ export function ChatWindow({ chatId, onToggleDetails, showDetails }: ChatWindowP
       )
       .subscribe();
 
+    // Channel for chat realtime (to track attendant changes)
+    const chatChannel = supabase
+      .channel(`chat-${chatId}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'chats', filter: `id=eq.${chatId}` },
+        (payload) => {
+          const updatedChat = payload.new as Chat;
+          setChat((prev) => prev ? { ...prev, ...updatedChat } : null);
+          
+          // Fetch new attendant profile if changed
+          if (updatedChat.atendente_atual_id && updatedChat.atendente_atual_id !== user?.id) {
+            fetchAttendantProfile(updatedChat.atendente_atual_id);
+          } else {
+            setAttendantProfile(null);
+          }
+        }
+      )
+      .subscribe();
+
     return () => {
-      supabase.removeChannel(channel);
+      supabase.removeChannel(messagesChannel);
+      supabase.removeChannel(chatChannel);
     };
-  }, [chatId]);
+  }, [chatId, user?.id]);
 
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
 
   useEffect(() => {
-    inputRef.current?.focus();
-  }, [chatId]);
+    if (!isObserverMode) {
+      inputRef.current?.focus();
+    }
+  }, [chatId, isObserverMode]);
+
+  // Fetch attendant profile when chat has an attendant
+  useEffect(() => {
+    if (chat?.atendente_atual_id && chat.atendente_atual_id !== user?.id) {
+      fetchAttendantProfile(chat.atendente_atual_id);
+    } else {
+      setAttendantProfile(null);
+    }
+  }, [chat?.atendente_atual_id, user?.id]);
 
   const scrollToBottom = () => {
     if (scrollRef.current) {
@@ -114,26 +159,60 @@ export function ChatWindow({ chatId, onToggleDetails, showDetails }: ChatWindowP
     if (data) setTags(data);
   };
 
+  const fetchAttendantProfile = async (attendantId: string) => {
+    const { data } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('user_id', attendantId)
+      .maybeSingle();
+    if (data) setAttendantProfile(data);
+  };
+
+  const handleAssumeChat = async () => {
+    if (!user?.id || assumingChat) return;
+    
+    setAssumingChat(true);
+    try {
+      await supabase
+        .from('chats')
+        .update({ 
+          atendente_atual_id: user.id,
+          status: 'em_atendimento'
+        })
+        .eq('id', chatId);
+      
+      await fetchChat();
+    } finally {
+      setAssumingChat(false);
+    }
+  };
+
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newMessage.trim() || sending) return;
+    if (!newMessage.trim() || sending || isObserverMode) return;
 
     setSending(true);
-    await supabase.from('messages').insert({
-      chat_id: chatId,
-      texto: newMessage.trim(),
-      tipo: 'saida',
-      enviado_por_id: user?.id,
-    });
+    try {
+      await supabase.from('messages').insert({
+        chat_id: chatId,
+        texto: newMessage.trim(),
+        tipo: 'saida',
+        enviado_por_id: user?.id,
+      });
 
-    await supabase
-      .from('chats')
-      .update({ status: 'em_atendimento', atendente_atual_id: user?.id })
-      .eq('id', chatId);
+      // Update chat status and attendant if not already set
+      if (!chat?.atendente_atual_id) {
+        await supabase
+          .from('chats')
+          .update({ status: 'em_atendimento', atendente_atual_id: user?.id })
+          .eq('id', chatId);
+      }
 
-    setNewMessage('');
-    setSending(false);
-    inputRef.current?.focus();
+      setNewMessage('');
+    } finally {
+      setSending(false);
+      inputRef.current?.focus();
+    }
   };
 
   const handleUpdateTag = async (tagId: string) => {
@@ -144,16 +223,6 @@ export function ChatWindow({ chatId, onToggleDetails, showDetails }: ChatWindowP
   const handleUpdateStatus = async (status: 'aberto' | 'em_atendimento' | 'aguardando' | 'finalizado') => {
     await supabase.from('chats').update({ status }).eq('id', chatId);
     fetchChat();
-  };
-
-  const getStatusLabel = (status: string) => {
-    const labels: Record<string, string> = {
-      aberto: 'Aberto',
-      em_atendimento: 'Em atendimento',
-      aguardando: 'Aguardando',
-      finalizado: 'Finalizado',
-    };
-    return labels[status] || status;
   };
 
   if (!chat) {
@@ -178,6 +247,18 @@ export function ChatWindow({ chatId, onToggleDetails, showDetails }: ChatWindowP
           </div>
         </div>
         <div className="flex items-center gap-1">
+          {canAssumeChat && (
+            <Button
+              variant="default"
+              size="sm"
+              onClick={handleAssumeChat}
+              disabled={assumingChat}
+              className="mr-2"
+            >
+              <UserCheck className="w-4 h-4 mr-1" />
+              {assumingChat ? 'Assumindo...' : 'Assumir Atendimento'}
+            </Button>
+          )}
           {chat.tags && (
             <Badge
               variant="outline"
@@ -276,18 +357,39 @@ export function ChatWindow({ chatId, onToggleDetails, showDetails }: ChatWindowP
         )}
       </div>
 
+      {/* Observer Mode Banner */}
+      {isObserverMode && (
+        <Alert className="mx-3 mb-2 border-amber-500 bg-amber-50">
+          <Eye className="h-4 w-4 text-amber-600" />
+          <AlertDescription className="text-amber-800">
+            <strong>Modo Observador:</strong> O atendente{' '}
+            <span className="font-semibold">{attendantProfile?.nome || 'Carregando...'}</span> está
+            cuidando desta conversa.
+          </AlertDescription>
+        </Alert>
+      )}
+
       {/* Input */}
       <form onSubmit={handleSendMessage} className="p-3 bg-[#f0f2f5] border-t border-border shrink-0">
         <div className="flex gap-2">
           <Input
             ref={inputRef}
-            placeholder="Digite uma mensagem..."
+            placeholder={isObserverMode ? 'Você está no modo observador' : 'Digite uma mensagem...'}
             value={newMessage}
             onChange={(e) => setNewMessage(e.target.value)}
             className="flex-1 bg-card"
+            disabled={isObserverMode}
           />
-          <Button type="submit" disabled={!newMessage.trim() || sending} size="icon">
-            <Send className="w-4 h-4" />
+          <Button 
+            type="submit" 
+            disabled={!newMessage.trim() || sending || isObserverMode} 
+            size="icon"
+          >
+            {sending ? (
+              <span className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <Send className="w-4 h-4" />
+            )}
           </Button>
         </div>
       </form>

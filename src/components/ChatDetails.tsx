@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/select';
 import { formatDistanceToNow, format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
+import { useToast } from '@/hooks/use-toast';
 
 interface TagData {
   id: string;
@@ -41,6 +42,7 @@ export function ChatDetails({ chatId, onClose }: ChatDetailsProps) {
   const [chat, setChat] = useState<Chat | null>(null);
   const [tags, setTags] = useState<TagData[]>([]);
   const [loading, setLoading] = useState(true);
+  const { toast } = useToast();
 
   useEffect(() => {
     fetchChat();
@@ -64,8 +66,17 @@ export function ChatDetails({ chatId, onClose }: ChatDetailsProps) {
   };
 
   const handleUpdateTag = async (tagId: string) => {
-    await supabase.from('chats').update({ tag_id: tagId }).eq('id', chatId);
-    fetchChat();
+    const { error } = await supabase.from('chats').update({ tag_id: tagId }).eq('id', chatId);
+    if (error) {
+      toast({
+        title: 'Erro ao atualizar tag',
+        description: error.message,
+        variant: 'destructive',
+      });
+    } else {
+      toast({ title: 'Tag atualizada com sucesso!' });
+      fetchChat();
+    }
   };
 
   const handleUpdateStatus = async (status: 'aberto' | 'em_atendimento' | 'aguardando' | 'finalizado') => {

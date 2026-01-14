@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 import { Users, MessageCircle, Tag } from 'lucide-react';
+import { TagsManagement } from '@/components/TagsManagement';
 
 interface Profile {
   id: string;
@@ -203,13 +204,16 @@ export default function Admin() {
                       <SelectItem value="comercial">Comercial</SelectItem>
                       <SelectItem value="suporte">Suporte</SelectItem>
                     </SelectContent>
-                  </Select>
-                </div>
+                </Select>
               </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+
+    {/* Tags Management */}
+    <TagsManagement />
+  </div>
+);
 }

@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
-import { Send, MoreVertical, User, Info, UserCheck, Eye, LogOut, UserPlus, Shield } from 'lucide-react';
+import { Send, MoreVertical, User, Info, UserCheck, Eye, LogOut, UserPlus, Shield, Clock, Check, CheckCheck, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -39,6 +39,7 @@ interface Message {
   tipo: string;
   enviado_por_id: string | null;
   created_at: string;
+  delivery_status?: string;
 }
 
 interface Profile {
@@ -163,7 +164,7 @@ export function ChatWindow({ chatId, onToggleDetails, showDetails }: ChatWindowP
   const fetchMessages = async () => {
     const { data } = await supabase
       .from('messages')
-      .select('*')
+      .select('id, chat_id, texto, tipo, enviado_por_id, created_at, delivery_status')
       .eq('chat_id', chatId)
       .order('created_at', { ascending: true });
     if (data) setMessages(data);
@@ -286,13 +287,24 @@ export function ChatWindow({ chatId, onToggleDetails, showDetails }: ChatWindowP
     if (!newMessage.trim() || sending || isObserverMode) return;
 
     setSending(true);
+    const messageText = newMessage.trim();
+    setNewMessage('');
+
     try {
-      await supabase.from('messages').insert({
-        chat_id: chatId,
-        texto: newMessage.trim(),
-        tipo: 'saida',
-        enviado_por_id: user?.id,
-      });
+      // Step 1: Insert message with pending status
+      const { data: insertedMessage, error: insertError } = await supabase
+        .from('messages')
+        .insert({
+          chat_id: chatId,
+          texto: messageText,
+          tipo: 'saida',
+          enviado_por_id: user?.id,
+          delivery_status: 'pending',
+        })
+        .select()
+        .single();
+
+      if (insertError) throw insertError;
 
       // Update chat status and attendant if not already set
       if (!chat?.atendente_atual_id) {
@@ -302,7 +314,83 @@ export function ChatWindow({ chatId, onToggleDetails, showDetails }: ChatWindowP
           .eq('id', chatId);
       }
 
-      setNewMessage('');
+      // Step 2: Fetch n8n webhook URL from app_settings
+      const { data: settings } = await supabase
+        .from('app_settings')
+        .select('n8n_webhook_url')
+        .limit(1)
+        .maybeSingle();
+
+      // Step 3: If webhook URL exists, send to n8n
+      if (settings?.n8n_webhook_url && insertedMessage) {
+        try {
+          const response = await fetch(settings.n8n_webhook_url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              chat_id: chatId,
+              numero_cliente: chat?.cliente_numero,
+              mensagem: messageText,
+              atendente_id: user?.id,
+              message_id: insertedMessage.id,
+            }),
+          });
+
+          // Update delivery status based on response
+          const newStatus = response.ok ? 'sent' : 'error';
+          await supabase
+            .from('messages')
+            .update({ delivery_status: newStatus })
+            .eq('id', insertedMessage.id);
+
+          // Update local state
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === insertedMessage.id ? { ...msg, delivery_status: newStatus } : msg
+            )
+          );
+
+          if (!response.ok) {
+            toast({
+              title: 'Erro no envio',
+              description: 'A mensagem foi salva mas falhou ao enviar via WhatsApp.',
+              variant: 'destructive',
+            });
+          }
+        } catch (webhookError) {
+          // Update status to error
+          await supabase
+            .from('messages')
+            .update({ delivery_status: 'error' })
+            .eq('id', insertedMessage.id);
+
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === insertedMessage.id ? { ...msg, delivery_status: 'error' } : msg
+            )
+          );
+
+          toast({
+            title: 'Falha na integração',
+            description: 'Não foi possível enviar a mensagem via n8n.',
+            variant: 'destructive',
+          });
+        }
+      } else if (insertedMessage) {
+        // No webhook configured, mark as sent (local only)
+        await supabase
+          .from('messages')
+          .update({ delivery_status: 'sent' })
+          .eq('id', insertedMessage.id);
+      }
+    } catch (error: any) {
+      toast({
+        title: 'Erro ao enviar mensagem',
+        description: error.message,
+        variant: 'destructive',
+      });
     } finally {
       setSending(false);
       inputRef.current?.focus();
@@ -469,9 +557,28 @@ export function ChatWindow({ chatId, onToggleDetails, showDetails }: ChatWindowP
                   }`}
                 >
                   <p className="text-sm whitespace-pre-wrap break-words">{message.texto}</p>
-                  <p className="text-[10px] text-muted-foreground mt-1 text-right">
-                    {format(new Date(message.created_at), 'HH:mm')}
-                  </p>
+                  <div className="flex items-center justify-end gap-1 mt-1">
+                    <span className="text-[10px] text-muted-foreground">
+                      {format(new Date(message.created_at), 'HH:mm')}
+                    </span>
+                    {/* Delivery status indicator for outgoing messages */}
+                    {message.tipo === 'saida' && (
+                      <span className="ml-1">
+                        {message.delivery_status === 'pending' && (
+                          <Clock className="w-3 h-3 text-muted-foreground" />
+                        )}
+                        {message.delivery_status === 'sent' && (
+                          <CheckCheck className="w-3 h-3 text-muted-foreground" />
+                        )}
+                        {message.delivery_status === 'error' && (
+                          <AlertCircle className="w-3 h-3 text-destructive" />
+                        )}
+                        {!message.delivery_status && (
+                          <Check className="w-3 h-3 text-muted-foreground" />
+                        )}
+                      </span>
+                    )}
+                  </div>
                 </div>
               )}
             </div>

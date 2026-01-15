@@ -14,7 +14,7 @@ import {
 import { useToast } from '@/hooks/use-toast';
 import { Users, MessageCircle, Tag } from 'lucide-react';
 import { TagsManagement } from '@/components/TagsManagement';
-
+import { ApiSettingsPanel } from '@/components/ApiSettingsPanel';
 interface Profile {
   id: string;
   user_id: string;
@@ -214,6 +214,9 @@ export default function Admin() {
 
     {/* Tags Management */}
     <TagsManagement />
+
+    {/* API Settings */}
+    <ApiSettingsPanel />
   </div>
 );
 }

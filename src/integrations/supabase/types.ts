@@ -14,6 +14,33 @@ export type Database = {
   }
   public: {
     Tables: {
+      app_settings: {
+        Row: {
+          created_at: string
+          id: string
+          meta_access_token: string | null
+          n8n_webhook_url: string | null
+          updated_at: string
+          whatsapp_phone_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          meta_access_token?: string | null
+          n8n_webhook_url?: string | null
+          updated_at?: string
+          whatsapp_phone_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          meta_access_token?: string | null
+          n8n_webhook_url?: string | null
+          updated_at?: string
+          whatsapp_phone_id?: string | null
+        }
+        Relationships: []
+      }
       chats: {
         Row: {
           atendente_atual_id: string | null
@@ -59,6 +86,7 @@ export type Database = {
         Row: {
           chat_id: string
           created_at: string
+          delivery_status: string | null
           enviado_por_id: string | null
           id: string
           texto: string
@@ -67,6 +95,7 @@ export type Database = {
         Insert: {
           chat_id: string
           created_at?: string
+          delivery_status?: string | null
           enviado_por_id?: string | null
           id?: string
           texto: string
@@ -75,6 +104,7 @@ export type Database = {
         Update: {
           chat_id?: string
           created_at?: string
+          delivery_status?: string | null
           enviado_por_id?: string | null
           id?: string
           texto?: string
